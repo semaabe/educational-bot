@@ -1,6 +1,4 @@
 import requests, os, asyncio, logging, csv
-#from aspose.slides import Presentation
-#from aspose.slides.export import SaveFormat
 from pyppeteer import launch
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -73,6 +71,15 @@ def download_file(url, folder):
         return None
 
 def convert_pptx_to_pdf(pptx_path, pdf_path):
+    # aspose.slides is an optional dependency (not in requirements.txt), so
+    # import it lazily and fail with a clear message when it is missing.
+    try:
+        from aspose.slides import Presentation
+        from aspose.slides.export import SaveFormat
+    except ImportError:
+        logging.error("aspose.slides is not installed; cannot convert PPTX files to PDF")
+        return
+
     try:
         if not os.path.exists(pptx_path):
             logging.error(f"File not found: {pptx_path}")

@@ -95,11 +95,14 @@ jobs:
       - name: Install dependencies
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install flake8
+          python3 -m pip install flake8==7.4.1
           pip install -r requirements.txt
 
-      - name: Linting...
-        run: flake8 src/ || true
+      - name: Lint (blocking, rules in .flake8)
+        run: flake8 src/
+
+      - name: Style report (non-blocking)
+        run: flake8 src/ --select=E,W,F --exit-zero --statistics --count
 
       - name: Wait for Postgres
         env:
