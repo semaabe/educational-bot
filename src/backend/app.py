@@ -1,7 +1,7 @@
 # app.py
 
 import httpx, uvicorn, chromadb, time, asyncio
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Depends , Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Depends
 from typing import Union, List, Any
 from datetime import datetime, timezone
 from utlis.pdf_helpers import read_pdf_text
@@ -29,6 +29,9 @@ from databases.chroma.modelsChroma import (
 )
 from databases.postgres.crudPostgres import PostgresCRUD
 from utlis.prompts import PROMPTS
+from backend.auth import (
+    require_roles, AuthenticatedUser, ADMIN_ROLES, CONTENT_ROLES, QUERY_ROLES
+)
 from backend.middleware.role_middleware import RoleMiddleware
 
 
@@ -49,7 +52,9 @@ app = FastAPI()
 crud = CRUD()
 postgres_crud = PostgresCRUD()
 semantic_router = create_router(crud)
-app.add_middleware(RoleMiddleware, audience="your-audience")
+# Default-deny: every request outside PUBLIC_PATHS must carry a valid token
+# with a known role. Per-route role policies are the require_roles dependencies.
+app.add_middleware(RoleMiddleware)
 
 def get_db():
     db = postgres_crud.get_connection()
@@ -124,7 +129,7 @@ async def health():
         "response_time_ms": round((time.perf_counter() - started) * 1000, 2),
     }
 
-@app.post('/channel_query') #, response_model=QueryResponse
+@app.post('/channel_query', dependencies=[Depends(require_roles(*QUERY_ROLES))]) #, response_model=QueryResponse
 async def channel_query(request: QueryRequest):
     try:
         query_embedding = await generate_embedding(request.query)
@@ -157,7 +162,7 @@ async def channel_query(request: QueryRequest):
         logging.error(f"Error with channel related question: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post('/setup_routes') # sets the routes in the router
+@app.post('/setup_routes', dependencies=[Depends(require_roles(*ADMIN_ROLES))]) # sets the routes in the router
 async def setup_routes(routes: dict = Body(...)):
     try:
         logging.info("Attempting to setup routes\n")
@@ -170,7 +175,7 @@ async def setup_routes(routes: dict = Body(...)):
         logging.error(f"Error with setting up routes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post('/resource_query') #, response_model=QueryResponse
+@app.post('/resource_query', dependencies=[Depends(require_roles(*QUERY_ROLES))]) #, response_model=QueryResponse
 async def resource_query(request: QueryRequest):
     try:
         # response = await process_query(crud, request)
@@ -224,7 +229,7 @@ async def resource_query(request: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
     
-@app.post('/update_chat_history')
+@app.post('/update_chat_history', dependencies=[Depends(require_roles(*QUERY_ROLES))])
 async def update_chat_history(request: UpdateChatHistory):
     all_messages = request.all_messages
     total_messages = sum([len(messages) for messages in all_messages.values()])
@@ -263,7 +268,7 @@ async def update_chat_history(request: UpdateChatHistory):
     logging.info(f"Update complete, {total_messages} messages from {len(all_messages)} channels are loaded to the database.")
     return {"status": "Update complete"}
 
-@app.post('/update_info')
+@app.post('/update_info', dependencies=[Depends(require_roles(*QUERY_ROLES))])
 async def update_info(request: Union[UpdateGuildInfo, UpdateChannelInfo, UpdateMemberInfo, UpdateChannelList]):
     try:
         if isinstance(request, UpdateGuildInfo):
@@ -296,7 +301,7 @@ async def update_info(request: Union[UpdateGuildInfo, UpdateChannelInfo, UpdateM
     logging.info(f"Info updated for {collection_name}")
     return {"status": "Update complete"}
 
-@app.post('/collections')
+@app.post('/collections', dependencies=[Depends(require_roles(*CONTENT_ROLES))])
 async def create_collection(payload: CollectionCreate):
     name = payload.name
     if not name:
@@ -345,28 +350,28 @@ async def create_collection(payload: CollectionCreate):
         raise HTTPException(status_code=404, detail=info["error"])
     return info
 
-@app.get('/collections')
+@app.get('/collections', dependencies=[Depends(require_roles(*QUERY_ROLES))])
 async def list_collections():
     result = await crud.list_collections()
     if isinstance(result, dict) and result.get("error"):
         raise HTTPException(status_code=500, detail=result["error"])
     return result
 
-@app.get('/collections/{name}')
+@app.get('/collections/{name}', dependencies=[Depends(require_roles(*QUERY_ROLES))])
 async def get_collection(name: str):
     info = await crud.get_collection_info(name)
     if isinstance(info, dict) and info.get("error"):
         raise HTTPException(status_code=404, detail=info["error"])
     return info
 
-@app.delete('/collections/{name}')
+@app.delete('/collections/{name}', dependencies=[Depends(require_roles(*CONTENT_ROLES))])
 async def delete_collection(name: str):
     result = await crud.delete_collection(name)
     if isinstance(result, dict) and result.get("error"):
         raise HTTPException(status_code=404, detail=result["error"])
     return result
 
-@app.post('/load_course_materials')
+@app.post('/load_course_materials', dependencies=[Depends(require_roles(*CONTENT_ROLES))])
 async def load_course_materials():
     file_path = os.getenv('PDF_OUTPUT_DIR', '/app/pdfs')
     logging.info(f"load_course_materials: Using PDF_OUTPUT_DIR={file_path}")
@@ -400,7 +405,7 @@ def _validate_discord_user(user_data: UserCreate):
     if user_data.role != "student":
         raise HTTPException(status_code=403, detail="Discord users must have the student role")
 
-@app.post("/api/users", response_model=UserResponse)
+@app.post("/api/users", response_model=UserResponse, dependencies=[Depends(require_roles(*ADMIN_ROLES))])
 async def create_discord_user(user_data: UserCreate, db: Any = Depends(get_db)):
     _validate_discord_user(user_data)
     existing = _user_response(postgres_crud.get_user(db=db, username=user_data.username))
@@ -420,14 +425,14 @@ async def create_discord_user(user_data: UserCreate, db: Any = Depends(get_db)):
         raise HTTPException(status_code=500, detail="User was created but could not be retrieved")
     return user
 
-@app.get("/api/users/{username}", response_model=UserResponse)
+@app.get("/api/users/{username}", response_model=UserResponse, dependencies=[Depends(require_roles(*ADMIN_ROLES))])
 async def get_discord_user(username: str, db: Any = Depends(get_db)):
     user = _user_response(postgres_crud.get_user(db=db, username=username))
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
-@app.post("/api/users/batch", response_model=List[UserResponse])
+@app.post("/api/users/batch", response_model=List[UserResponse], dependencies=[Depends(require_roles(*ADMIN_ROLES))])
 async def create_users_batch(users_data: List[UserCreate], db: Any = Depends(get_db)):
     processed = []
     for user_data in users_data:
@@ -470,7 +475,7 @@ async def create_users_batch(users_data: List[UserCreate], db: Any = Depends(get
 #         logging.error(f"app.py: Error with loading PDFs: {e}")
 #         return {"message": "Failed to load PDFs."}
 
-@app.post("/upload_pdfs")
+@app.post("/upload_pdfs", dependencies=[Depends(require_roles(*CONTENT_ROLES))])
 async def upload_multiple_pdfs(files: List[UploadFile] = File(...), collection_name: str = Form(...), user: str = Form(...)):
     """
     Handles the upload of multiple PDF files.
@@ -512,7 +517,7 @@ async def upload_multiple_pdfs(files: List[UploadFile] = File(...), collection_n
         "user": user
     }
 
-@app.post('/grading_expert') #, response_model=QueryResponse
+@app.post('/grading_expert', dependencies=[Depends(require_roles(*CONTENT_ROLES))]) #, response_model=QueryResponse
 async def grading_expert(file: UploadFile = File(...)):
     file_embeddings = None
 
@@ -566,9 +571,12 @@ async def grading_expert(file: UploadFile = File(...)):
 
 
 @app.post("/query")
-async def query_endpoint(request: Request, body: QueryRequest):
-    user_role = getattr(request.state, "user_role", "student")  # fallback to student
-    response = await semantic_router.process_query(body, role=user_role)
+async def query_endpoint(
+    body: QueryRequest,
+    user: AuthenticatedUser = Depends(require_roles(*QUERY_ROLES)),
+):
+    # The role comes only from the validated token; there is no default.
+    response = await semantic_router.process_query(body, role=user.role)
     return response
 
 if __name__ == '__main__':
