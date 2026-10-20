@@ -7,6 +7,7 @@ from databases.chroma.modelsChroma import (
 )
 from services.nlpTools import TextProcessor
 from utlis.config import PROFANITY_THRESHOLD
+from backend.auth import auth_headers
 from backend.modelsPydantic import UpdateChatHistory, Message
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -16,15 +17,16 @@ nlp_tools = TextProcessor()
 async def send_to_app(route, data):
     async with httpx.AsyncClient(timeout=60.0) as client:
         logging.info(f'route: {route}')
+        headers = auth_headers()
         if route == "upload_pdfs":
             # For file uploads, data is a dict with files and form fields
-            response = await client.post(f'http://localhost:8000/{route}', **data)
+            response = await client.post(f'http://localhost:8000/{route}', headers=headers, **data)
         elif route == "collections":
             # For collections, send JSON body
-            response = await client.post(f'http://localhost:8000/{route}', json=data)
+            response = await client.post(f'http://localhost:8000/{route}', json=data, headers=headers)
         else:
             logging.info(f"route: {route}, data: {data}")
-            response = await client.post(f'http://localhost:8000/{route}', json=data)
+            response = await client.post(f'http://localhost:8000/{route}', json=data, headers=headers)
             logging.info(f'response code at send app level: {response.status_code}')
     return response
 
@@ -32,7 +34,8 @@ async def get_from_app(route, params=None):
     async with httpx.AsyncClient(timeout=60.0) as client:
         return await client.get(
             f"http://localhost:8000/{route}",
-            params=params
+            params=params,
+            headers=auth_headers()
         )
 
 async def update_message(all_messages, bot_user, chunk_size=25):
