@@ -1,14 +1,16 @@
 from fastapi.testclient import TestClient
-from unittest.mock import patch
 from backend.app import app  # Assuming 'app' is imported from here
+from backend.auth import mint_token
 
 client = TestClient(app)
 
-# Mock payloads for different roles
-mock_payloads = {
-    "student": {"role": "student"},
-    "professor": {"role": "professor"},
-}
+
+# Real tokens signed with the API's per-process key, rather than mocking jwt.decode.
+def bearer(role):
+    return {"Authorization": f"Bearer {mint_token('test-user', role)}"}
+
+
+ROLES = ["student", "professor"]
 
 # Queries to test per role
 test_queries = {
@@ -17,21 +19,18 @@ test_queries = {
 }
 
 def test_role_based_queries():
-    for role, payload in mock_payloads.items():
+    for role in ROLES:
         query = test_queries[role]
 
-        with patch("backend.middleware.role_middleware.jwt.decode") as mock_decode:
-            mock_decode.return_value = payload
-
-            response = client.post(
-                "/query",
-                headers={"Authorization": "Bearer faketoken"},
-                json={
-                    "query": query,
-                    "guild_id": 123,
-                    "channel_id": 456
-                }
-            )
+        response = client.post(
+            "/query",
+            headers=bearer(role),
+            json={
+                "query": query,
+                "guild_id": 123,
+                "channel_id": 456
+            }
+        )
         
         # Print helpful debug info *before* the assertion
         print(f"\n=== TESTING ROLE: {role.upper()} ===")
@@ -59,13 +58,11 @@ def test_invalid_and_missing_tokens():
     print("Response JSON:", response.json())
 
     # Test invalid token (should return 401)
-    with patch("backend.middleware.role_middleware.jwt.decode") as mock_decode:
-        mock_decode.side_effect = Exception("Invalid token")
-        response = client.post(
-            "/query",
-            headers={"Authorization": "Bearer invalidtoken"},
-            json={"query": "any query", "guild_id": 0, "channel_id": 0} 
-        )
+    response = client.post(
+        "/query",
+        headers={"Authorization": "Bearer invalidtoken"},
+        json={"query": "any query", "guild_id": 0, "channel_id": 0}
+    )
     assert response.status_code in [401], f"Invalid token test failed: {response.status_code}"
     print("\n=== INVALID TOKEN RESPONSE ===")
     print("Status code:", response.status_code)

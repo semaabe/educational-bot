@@ -1,49 +1,52 @@
+"""Global authentication gate for the FastAPI backend.
+
+Every request outside ``PUBLIC_PATHS`` must carry a valid ``Bearer`` JWT whose
+``role`` is one of ``auth.ALLOWED_ROLES`` before it is forwarded. There is no
+anonymous fallback role.
+
+This is the default-deny layer, so a route added without a ``require_roles``
+dependency is still closed to unauthenticated callers. Which roles may use a
+particular route is decided by that route's ``require_roles`` dependency.
+"""
+
+from fastapi import HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-import google.auth.jwt as jwt
-import logging 
 
-# Middleware to handle role-based access using JWT tokens
+from backend.auth import authenticate
+
+# Reachable without credentials. Swagger UI needs its own pages to offer the
+# "Authorize" button; every operation it calls is still protected.
+PUBLIC_PATHS = frozenset({
+    "/health",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/redoc",
+    "/openapi.json",
+})
+
+
 class RoleMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, audience: str):
-        super().__init__(app) # Initialize the base middleware
-        self.audience = audience # Audience for JWT validation
+    def __init__(self, app, public_paths=PUBLIC_PATHS):
+        super().__init__(app)
+        self.public_paths = frozenset(public_paths)
 
-    # Process each request 
     async def dispatch(self, request: Request, call_next):
-        auth_header = request.headers.get("Authorization")
-
-        if not auth_header: 
-            request.state.user_role = "student"
+        if request.url.path in self.public_paths:
             return await call_next(request)
 
-        if not auth_header.startswith("Bearer "):
-              return JSONResponse(
-                {"detail": "Invalid token type"},
-                status_code=400
-            )
-        
-    # Process and validate JWT token
+        # Exceptions raised in BaseHTTPMiddleware bypass FastAPI's handlers,
+        # so the auth error is turned into a response here.
         try:
-            token_type, token = auth_header.split(" ")
-            if token_type.lower() != "bearer":
-                return JSONResponse({"detail": "Invalid token type"}, status_code=400)
+            user = authenticate(request.headers.get("Authorization"))
+        except HTTPException as exc:
+            return JSONResponse(
+                {"detail": exc.detail},
+                status_code=exc.status_code,
+                headers=exc.headers,
+            )
 
-            payload = jwt.decode(token, certs_url="https://www.googleapis.com/oauth2/v1/certs", audience=self.audience)
-            role = payload.get("role")
-            if not role:
-                return JSONResponse({"detail": "Role not found in token"}, 
-                                    status_code=403
-                                )
-            
-            # Attach role and payload to request state
-            request.state.user_role = role
-            request.state.user_payload = payload
-        
-        except Exception as e:
-            logging.error(f"Token validation error: {e}")
-            return JSONResponse({"detail": f"Invalid token"}, status_code=401)
-        
-        response = await call_next(request)
-        return response
+        request.state.user = user
+        request.state.user_role = user.role
+        return await call_next(request)
