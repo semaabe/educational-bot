@@ -55,6 +55,12 @@ ADMIN_ROLES = ("professor", "admin")
 
 # The Discord bot's service token. It registers users and sets up routes, so it
 # needs a role in ADMIN_ROLES.
+#
+# This role covers ALL bot traffic: the bot signs every request with this one
+# token, so the backend cannot tell which Discord user sent it. A student
+# running /upload or /create_collection is treated as a professor, and no
+# Discord command checks the caller's role yet. Per-user checks (in the bot
+# commands or via per-user tokens) are a follow-up.
 SERVICE_SUBJECT = "discord-bot"
 SERVICE_ROLE = "professor"
 SERVICE_TOKEN_TTL_SECONDS = 3600
