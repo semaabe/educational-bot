@@ -5,6 +5,7 @@ from backend.app import app as fastapi_app
 from router.RouteMap import ThreadSafeMap
 from community_apps.discordHelper import get_from_app
 from utlis.config import require_discord_token
+from backend.auth import auth_headers
 import httpx
 import logging
 from router.utterances import UTTERANCES
@@ -66,7 +67,9 @@ async def on_member_join(member):
     }
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post("http://localhost:8000/api/users", json=payload)
+            response = await client.post(
+                "http://localhost:8000/api/users", json=payload, headers=auth_headers()
+            )
         if response.status_code not in (200, 201):
             logging.error("Failed to register Discord member %s: %s", member.id, response.status_code)
     except httpx.HTTPError as exc:
@@ -107,7 +110,11 @@ async def main():
     # Send the routes map to backend to set up semantic router
     async with httpx.AsyncClient() as client:
         routes_snapshot = await routes.snapshot()
-        await client.post("http://localhost:8000/setup_routes", json=routes_snapshot)
+        await client.post(
+            "http://localhost:8000/setup_routes",
+            json=routes_snapshot,
+            headers=auth_headers(),
+        )
 
     discord_bot.set_routes(routes)
 

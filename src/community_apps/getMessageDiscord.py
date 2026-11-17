@@ -4,6 +4,7 @@ from discord import app_commands
 from profanity_check import predict, predict_prob
 
 from utlis.config import require_discord_token, PROFANITY_THRESHOLD
+from backend.auth import auth_headers
 from community_apps.discordHelper import (
     send_to_app, update_message, get_channels_and_messages, message_filter, available_commands,
     store_guild_info, store_channel_info, store_member_info, store_channel_list, get_parameters,
@@ -94,6 +95,7 @@ class DiscordBot:
                         response = await client.post(
                             "http://localhost:8000/api/users/batch",
                             json=users_to_sync,
+                            headers=auth_headers(),
                         )
                     if response.status_code != 200:
                         logging.error("Discord user sync failed with status %s", response.status_code)
@@ -231,7 +233,8 @@ class DiscordBot:
                 response = await client.post(
                     "http://localhost:8000/upload_pdfs",
                     files=files,
-                    data=form_data
+                    data=form_data,
+                    headers=auth_headers()
                 )
 
             if response.status_code == 200:
@@ -337,7 +340,8 @@ class DiscordBot:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     "http://localhost:8000/grading_expert",
-                    files=[file]
+                    files=[file],
+                    headers=auth_headers()
                 )
 
             if response.status_code == 200:
