@@ -1,0 +1,37 @@
+# Flake8 CI contract for educational-bot.
+#
+# CI runs `flake8 src/` and fails the build on any violation listed in
+# `select` below. For now the contract only covers errors that would crash
+# at runtime (syntax errors and undefined names), so lint failures always
+# point at real bugs.
+#
+# Other checks (unused imports, whitespace, line length, ...) are printed by a
+# non-blocking "Style report" step in CI and will be added to `select` in a
+# later sprint, once the repository passes them. To see that report locally:
+#
+#     flake8 src/ --select=E,W,F --exit-zero --statistics
+#
+# To extend the contract, add codes to `select` only after the repository
+# passes them, and prefer `per-file-ignores` over broad `ignore` entries.
+
+[flake8]
+select =
+    # E9: syntax errors / runtime errors from compile()
+    E9,
+    # F63: invalid comparisons (e.g. `is` with a literal)
+    F63,
+    # F7: syntax errors detected by pyflakes (break outside loop, etc.)
+    F7,
+    # F82: undefined names
+    F82
+
+# Used by the style report above; not enforced while E501 is unselected.
+max-line-length = 120
+
+exclude =
+    .git,
+    __pycache__,
+    venv,
+    .venv,
+    data,
+    local_chromadb

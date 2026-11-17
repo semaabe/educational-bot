@@ -47,3 +47,32 @@ Each commit message should consist of a **type** and a **subject**:
 - `test: Add unit tests for user registration`
 - `chore: Update project dependencies`
 - `revert: Revert "Add login functionality"`
+
+## Linting
+
+CI runs `flake8 src/` as a **blocking** step in both workflows. The rules it
+enforces live in [`.flake8`](.flake8) at the repo root, so local runs and CI
+always use the same rules.
+
+**Enforced today** (errors that would crash at runtime):
+
+| Code | Meaning |
+|------|---------|
+| `E9`  | Syntax / compile errors |
+| `F63` | Invalid comparisons (e.g. `x is "literal"`) |
+| `F7`  | Syntax errors found by pyflakes (`break` outside a loop, etc.) |
+| `F82` | Undefined names |
+
+**Not enforced yet:** unused imports, whitespace, and line-length rules. CI
+prints them in a non-blocking "Style report" step so they stay visible; they
+will be turned on once the repository passes them.
+
+**Before opening a PR**, run from the repo root with your venv active:
+
+```bash
+pip install flake8==7.4.1
+flake8 src/
+```
+
+**Changing the rules:** only add a code to `select` in `.flake8` after
+`flake8 src/` passes with it.
