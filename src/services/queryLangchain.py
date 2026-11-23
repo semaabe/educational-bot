@@ -65,14 +65,6 @@ async def fetchGptResponse(query, role, data=None):
 
     llm = create_llm()
 
-    response = await asyncio.to_thread(
-        llm.invoke,
-        [
-            ("system", f"{role} Here are the relevant information {str(data)}."),
-            ("user", query),
-        ],
-    )
-        
     if isinstance(data, dict):
         context.update(data)
 
