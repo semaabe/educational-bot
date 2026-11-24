@@ -17,6 +17,19 @@ handler.setFormatter(formatter)
 if not logger.hasHandlers():
     logger.addHandler(handler)
 
+# Shared by save_pdfs (course materials) and save_pdfs_from_discord (!upload)
+# so both paths produce chunks of the same size.
+PDF_CHUNK_SIZE = 1000
+PDF_CHUNK_OVERLAP = 200
+
+
+def create_pdf_text_splitter():
+    return RecursiveCharacterTextSplitter(
+        chunk_size = PDF_CHUNK_SIZE,
+        chunk_overlap = PDF_CHUNK_OVERLAP
+    )
+
+
 class CRUD():
     def __init__(self):
         self.client = chromadb.PersistentClient(path = DB_PATH)
@@ -146,11 +159,8 @@ class CRUD():
             return []  # Return empty list instead of None
         
 
-        # split the text 
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size = 1000, 
-            chunk_overlap = 200
-        )
+        # split the text
+        text_splitter = create_pdf_text_splitter()
 
         # get docs, ids, and filenames (for metadata purposes)
         docs = text_splitter.split_documents(docs)
@@ -202,26 +212,48 @@ class CRUD():
 
         return data_to_save
     
-    async def save_pdfs_from_discord(self, user, collection_name, pdf):
-        print(f"Saving PDFs from {user} to collection {collection_name}")
+    async def save_pdfs_from_discord(self, user, collection_name, filename, text):
+        """Split one uploaded PDF's text into chunks and embed each chunk.
 
-        doc, embedding = pdf
-        
+        Returns the items to pass to save_to_db, one per chunk. Returns an
+        empty list when the text has nothing to index (e.g. a scanned PDF).
+        """
+        print(f"Saving {filename} from {user} to collection {collection_name}")
+
+        chunks = [
+            chunk for chunk in create_pdf_text_splitter().split_text(text or "")
+            if chunk.strip()
+        ]
+
         data_to_save = []
-        # Prepare the metadata for saving
-        metadata = {
-            "source": user
-        }
+        for chunk_index, chunk in enumerate(chunks):
+            embedding = await generate_embedding(chunk)
 
-        # Add to data to be saved
-        data_to_save.append({
-            "collection_name": collection_name,
-            "document": doc,
-            "embedding": embedding,
-            "metadata": metadata
-        })
+            # Chroma metadata values must be str, int, float or bool
+            metadata = {
+                "id": str(uuid.uuid4()),
+                "source": filename,
+                "filename": filename,
+                "chunk_index": chunk_index,
+                "total_chunks": len(chunks),
+                "uploader": str(user),
+            }
+
+            data_to_save.append({
+                "collection_name": collection_name,
+                "document": chunk,
+                "embedding": embedding,
+                "metadata": metadata
+            })
 
         return data_to_save
+
+    async def delete_documents(self, collection_name, ids):
+        """Remove documents by id; used to roll back a partially saved upload."""
+        if not ids:
+            return
+        collection = await asyncio.to_thread(self.client.get_or_create_collection, str(collection_name))
+        await asyncio.to_thread(collection.delete, ids=[str(id) for id in ids])
 
     async def get_collection_info(self, name: str):
         # Get information aboput a part icualr collection 

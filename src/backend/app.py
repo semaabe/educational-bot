@@ -2,6 +2,7 @@
 
 import httpx, uvicorn, chromadb, time, asyncio
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Depends
+from fastapi.responses import JSONResponse
 from typing import Union, List, Any
 from datetime import datetime, timezone
 from utlis.pdf_helpers import read_pdf_text
@@ -475,47 +476,76 @@ async def create_users_batch(users_data: List[UserCreate], db: Any = Depends(get
 #         logging.error(f"app.py: Error with loading PDFs: {e}")
 #         return {"message": "Failed to load PDFs."}
 
+async def _upload_one_pdf(file: UploadFile, collection_name: str, user: str) -> dict:
+    """Chunk, embed and save one PDF. Returns its per-file result."""
+    result = {"filename": file.filename, "status": "failed", "chunks": 0, "error": None}
+
+    if file.content_type != "application/pdf":
+        result["error"] = "Invalid file type. Only PDFs are allowed."
+        return result
+
+    saved_ids = []
+    try:
+        text = await read_pdf_text(file)
+        data = await crud.save_pdfs_from_discord(user, collection_name, file.filename, text)
+        if not data:
+            result["error"] = "No extractable text found in the PDF."
+            return result
+
+        batch_size = 10
+        for i in range(0, len(data), batch_size):
+            batch = data[i:i + batch_size]
+            await crud.save_to_db(batch)
+            saved_ids.extend(item["metadata"]["id"] for item in batch)
+
+        result["status"] = "success"
+        result["chunks"] = len(data)
+        logging.info(f"Saved {file.filename} as {len(data)} chunks for user {user} to collection {collection_name}.")
+    except Exception as e:
+        logging.error(f"app.py: Error with uploading {file.filename}: {e}")
+        result["error"] = str(e)
+        # Don't leave a half-indexed file behind when it is reported as failed.
+        try:
+            await crud.delete_documents(collection_name, saved_ids)
+        except Exception as cleanup_error:
+            logging.error(f"app.py: Failed to roll back chunks of {file.filename}: {cleanup_error}")
+    return result
+
+
 @app.post("/upload_pdfs", dependencies=[Depends(require_roles(*CONTENT_ROLES))])
 async def upload_multiple_pdfs(files: List[UploadFile] = File(...), collection_name: str = Form(...), user: str = Form(...)):
     """
     Handles the upload of multiple PDF files.
+
+    Each file is processed independently and reported in `results`.
+    Status code: 200 if every file was saved, 207 if only some were,
+    422 if none were.
     """
-    processed_files = []
-    failed_files = []
+    results = [await _upload_one_pdf(file, collection_name, user) for file in files]
 
-    for file in files:
-        if file.content_type != "application/pdf":
-            raise HTTPException(status_code=400, detail=f"Invalid file type for {file.filename}. Only PDFs are allowed.")
-        try:
-            text = await read_pdf_text(file)
-            file_embeddings = await generate_embedding(text)
+    succeeded = [r for r in results if r["status"] == "success"]
+    failed = [r for r in results if r["status"] != "success"]
 
-            pdf = (text, file_embeddings)
-            data = await crud.save_pdfs_from_discord(user, collection_name, pdf)
+    if not failed:
+        status, status_code = "success", 200
+        message = "PDFs uploaded and saved successfully."
+    elif succeeded:
+        status, status_code = "partial", 207
+        message = f"{len(succeeded)} of {len(results)} PDF(s) saved; {len(failed)} failed."
+    else:
+        status, status_code = "failed", 422
+        message = "No PDFs were saved."
 
-            chunk_size = 10
-            for i in range(0, len(data), chunk_size):
-                await crud.save_to_db(data[i:i+chunk_size])
-
-            logging.info(f"PDFs saved successfully for user {user} to collection {collection_name}.")
-            processed_files.append(file.filename)
-        except Exception as e:
-            logging.error(f"app.py: Error with uploading PDFs: {e}")
-            failed_files.append({"filename": file.filename, "error": str(e)})
-    
-    if failed_files:
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Failed to process {len(failed_files)} file(s): {failed_files}"
-        )
-    
-    return {
-        "message": "PDFs uploaded and saved successfully.",
+    return JSONResponse(status_code=status_code, content={
+        "status": status,
+        "message": message,
         "collection": collection_name,
-        "processed_count": len(processed_files),
-        "processed_files": processed_files,
-        "user": user
-    }
+        "user": user,
+        "processed_count": len(succeeded),
+        "failed_count": len(failed),
+        "processed_files": [r["filename"] for r in succeeded],
+        "results": results,
+    })
 
 @app.post('/grading_expert', dependencies=[Depends(require_roles(*CONTENT_ROLES))]) #, response_model=QueryResponse
 async def grading_expert(file: UploadFile = File(...)):

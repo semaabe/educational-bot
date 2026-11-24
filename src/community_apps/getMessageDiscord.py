@@ -60,6 +60,57 @@ async def send_in_chunks(destination, text, chunk_size: int = 1900):
         await destination.send(chunk)
 
 
+def format_upload_response(response) -> str:
+    """Turn an /upload_pdfs response into a per-file summary for Discord."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    results = body.get("results") if isinstance(body, dict) else None
+    if not isinstance(results, list):
+        return f"Failed to upload PDFs: {response.text}"
+
+    lines = [body.get("message", "Upload finished.")]
+    for result in results:
+        name = result.get("filename", "unknown file")
+        if result.get("status") == "success":
+            lines.append(f"Successful: {name} saved as {result.get('chunks', 0)} chunk(s)")
+        else:
+            lines.append(f"Unsuccessful: {name} {result.get('error') or 'failed'}")
+    return "\n".join(lines)
+
+
+async def upload_attachments(attachments, collection: str, user_id) -> str:
+    """Send Discord attachments to /upload_pdfs and return the reply text.
+
+    Shared by /upload and !upload. The backend checks each file's type and
+    reports per-file results, so non-PDFs are passed through and reported.
+    """
+    files = []
+    for attachment in attachments:
+        if attachment.filename.lower().endswith(".pdf"):
+            content_type = "application/pdf"
+        else:
+            content_type = attachment.content_type or "application/octet-stream"
+        files.append(("files", (attachment.filename, await attachment.read(), content_type)))
+
+    form_data = {"collection_name": collection, "user": str(user_id)}
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "http://localhost:8000/upload_pdfs",
+                files=files,
+                data=form_data,
+                headers=auth_headers()
+            )
+    except httpx.HTTPError as exc:
+        logging.error("PDF upload request failed: %s", exc)
+        return "Failed to upload PDFs: the backend could not be reached or timed out."
+
+    return format_upload_response(response)
+
+
 class DiscordBot:
     def __init__(self, bot):
         self.bot = bot
@@ -208,6 +259,30 @@ class DiscordBot:
             else:
                 await interaction.followup.send("Failed to load PDFs.")
         
+        @self.tree.command(name="upload", description="Upload PDFs to a collection")
+        @app_commands.describe(
+            collection="The collection to add the PDFs to",
+            file1="PDF to upload",
+            file2="Another PDF (optional)",
+            file3="Another PDF (optional)",
+            file4="Another PDF (optional)",
+            file5="Another PDF (optional)",
+        )
+        async def upload_slash(
+            interaction: discord.Interaction,
+            collection: str,
+            file1: discord.Attachment,
+            file2: discord.Attachment = None,
+            file3: discord.Attachment = None,
+            file4: discord.Attachment = None,
+            file5: discord.Attachment = None,
+        ):
+            attachments = [f for f in (file1, file2, file3, file4, file5) if f is not None]
+            # Processing takes longer than Discord's 3-second reply window.
+            await interaction.response.defer(thinking=True)
+            reply = await upload_attachments(attachments, collection, interaction.user.id)
+            await send_in_chunks(interaction.followup, reply)
+
         @self.bot.command(name="upload")
         async def upload(ctx, collection: str):
             # Only respond to messages with attachments
@@ -219,28 +294,8 @@ class DiscordBot:
                 await ctx.send("Please attach one or more PDF files to your message.")
                 return
 
-            files = []
-            for attachment in pdf_attachments:
-                file_bytes = await attachment.read()
-                files.append(("files", (attachment.filename, file_bytes, "application/pdf")))
-
-            form_data = {
-                "collection_name": collection,
-                "user": str(ctx.author.id)
-            }
-
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "http://localhost:8000/upload_pdfs",
-                    files=files,
-                    data=form_data,
-                    headers=auth_headers()
-                )
-
-            if response.status_code == 200:
-                await ctx.send("PDFs uploaded and processed successfully.")
-            else:
-                await ctx.send(f"Failed to upload PDFs: {response.text}")
+            reply = await upload_attachments(pdf_attachments, collection, ctx.author.id)
+            await send_in_chunks(ctx, reply)
 
         @self.tree.command(name="resource", description="Query for resources")
         @app_commands.describe(query="The query you want to ask")
