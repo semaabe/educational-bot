@@ -170,58 +170,78 @@ async def setup_routes(routes: dict = Body(...)):
         logging.error(f"Error with setting up routes: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post('/resource_query') #, response_model=QueryResponse
-async def resource_query(request: QueryRequest):
-    try:
-        # response = await process_query(crud, request)
-        logging.info("Attempting to do resource query")
-        response = await semantic_router.process_query(request)
-        # handle router errors returned as dicts
-        if isinstance(response, dict) and response.get('error'):
-            logging.error(f"Router error: {response.get('error')}")
-            # If the index isn't ready, return 503 to indicate temporary unavailability
-            if 'Index is not ready' in str(response.get('error')):
-                raise HTTPException(status_code=503, detail=response.get('error'))
-            raise HTTPException(status_code=500, detail=response.get('error'))
 
-        # should generate a response based on this
+@app.post('/resource_query')
+async def resource_query(request: Request, body: QueryRequest):
+    user_role = getattr(request.state, "user_role", None)
+
+    if not user_role:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required"
+        )
+
+    try:
+        logging.info("Attempting to do resource query")
+
+        response = await semantic_router.process_query(
+            body,
+            role=user_role
+        )
+
+        # Handle router errors
+        if isinstance(response, dict) and response.get("error"):
+            error = response["error"]
+            logging.error(f"Router error: {error}")
+
+            if "Index is not ready" in str(error):
+                raise HTTPException(status_code=503, detail=error)
+
+            raise HTTPException(status_code=500, detail=error)
 
         if response is None:
-            raise ValueError("Process_query returned none")
-    
-        # Limit the documents sent to the LLM by doing a similarity search
-        query = request.query
+            raise HTTPException(
+                status_code=500,
+                detail="Process_query returned none"
+            )
+
+        query = body.query
         query_embedding = await generate_embedding(query)
-        similar = await crud.get_data_by_similarity(response.name, query_embedding, top_k=3)
 
-        # Chroma returns documents as a list-of-lists for batched queries; extract the first list
-        relevant_documents = []
-        try:
-            docs = similar.get('documents', [])
-            if isinstance(docs, list) and len(docs) > 0:
-                relevant_documents = docs[0]
-        except Exception as e:
-            relevant_documents = []
-            logging.info(f'Unable to pull relevant documents: {e}')
+        similar = await crud.get_data_by_similarity(
+            response.name,
+            query_embedding,
+            top_k=3
+        )
 
-        logging.info(f"Relevant documents (top_k=3): {relevant_documents}")
+        docs = similar.get("documents", [])
+        relevant_documents = (
+            docs[0] if isinstance(docs, list) and docs else []
+        )
 
-        # combine the relevant messages and channel info
         combined_data = {
             "relevant_documents": relevant_documents,
             "query": query,
-            "question_type": getattr(response, 'name', str(response))
+            "question_type": response.name
         }
 
         answer = await fetchGptResponse(
-                    query, PROMPTS['expert_instruction'], combined_data
-                )        
-        logging.info(f"Answer: {answer}")
-        return {'answer': answer}
+            query,
+            PROMPTS["expert_instruction"],
+            combined_data
+        )
+
+        return {"answer": answer}
+
+    except HTTPException:
+        raise
 
     except Exception as e:
-        logging.error(f"Error with course material related question: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.exception("Error with course material related question")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to process resource query"
+        )
 
     
 @app.post('/update_chat_history')
@@ -567,8 +587,27 @@ async def grading_expert(file: UploadFile = File(...)):
 
 @app.post("/query")
 async def query_endpoint(request: Request, body: QueryRequest):
-    user_role = getattr(request.state, "user_role", "student")  # fallback to student
-    response = await semantic_router.process_query(body, role=user_role)
+    # user_role = getattr(request.state, "user_role", "student")  # fallback to student
+    user_role = getattr(request.state, "user_role", None)
+
+    if not user_role:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required"
+        )
+
+    response = await semantic_router.process_query(
+        body,
+        role=user_role
+    )
+
+    if isinstance(response, dict) and response.get("error"):
+        error = response["error"]
+
+        if "Index is not ready" in str(error):
+            raise HTTPException(status_code=503, detail=error)
+
+        raise HTTPException(status_code=500, detail=error)
     return response
 
 if __name__ == '__main__':

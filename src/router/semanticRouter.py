@@ -128,44 +128,60 @@ class SemanticRouter:
         logging.info(f"Answer: {answer}")
         return {'answer': answer}
 
-    async def process_query(self, request: QueryRequest, role: str = None):
-        """Main entry point to process a query through the semantic router"""
-        try:
-            logging.info("Attempting to use route layer")
-            # ensure route layer is ready (lazy init)
-            self._init_route_layer()
-            route = self.route_layer(request.query)
-            logging.info(f"Raw route result type: {type(route)}; repr: {repr(route)}")
+    async def process_query(self, request: QueryRequest, role: str):
+    """Process a query while enforcing role-based route access."""
 
-            # Normalize route to an object with a `name` attribute expected by the caller
-            if hasattr(route, "name"):
-                normalized = route
-            elif isinstance(route, str):
-                # router returned the matched route name as a string
-                class _R: pass
-                r = _R()
-                r.name = route
-                normalized = r
-            elif isinstance(route, dict) and "name" in route:
-                class _R: pass
-                r = _R()
-                r.name = route.get("name")
-                normalized = r
-            else:
-                # fallback: coerce to string as the route name
-                class _R: pass
-                r = _R()
-                r.name = str(route)
-                normalized = r
-            logging.info(f"Response from the route layer: {route}, original query: {request.query}")
+    try:
+        if not role:
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required"
+            )
 
-            logging.info(f"Processed route: {normalized}")
+        allowed_routes = ROLE_ROUTES.get(role)
 
-            return normalized
+        if allowed_routes is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid or unauthorized user role"
+            )
 
-        except Exception as e:
-            logging.error(f"Error processing query: {request.query} | Error: {e}")
-            return {"error": str(e)} 
+        logging.info(
+            "Processing query for authenticated role: %s", role
+        )
+
+        self._init_route_layer()
+
+        route = self.route_layer(request.query)
+
+        if hasattr(route, "name"):
+            route_name = route.name
+        elif isinstance(route, str):
+            route_name = route
+        elif isinstance(route, dict) and "name" in route:
+            route_name = route["name"]
+        else:
+            route_name = str(route)
+
+        # Enforce role-based route access
+        if route_name not in allowed_routes:
+            raise HTTPException(
+                status_code=403,
+                detail="You do not have permission to access this resource"
+            )
+
+        class RouteResult:
+            def __init__(self, name):
+                self.name = name
+
+        return RouteResult(route_name)
+    
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        logging.exception("Error processing query: %s", request.query)
+        return {"error": str(e)}    
 
 # Factory function to create router instance
 def create_router(crud):
